@@ -104,4 +104,3 @@ EOF
             --push
 
           echo "Completed: Device tree has been uploaded to GitHub."
-          
