@@ -1,3 +1,7 @@
+# Auto LineageOS Tree Generator Workflow - Advanced Version
+# Developed by: jisan ff <ffjisan804@gmail.com>
+# New GitHub Identity: frnwot <frnbuid2005@gmail.com>
+
 name: Auto LineageOS Tree Generator
 
 on:
@@ -6,101 +10,112 @@ on:
       DUMP_URL:
         description: 'ROM dump Git repository URL'
         required: true
+        default: 'https://github.com/yourusername/device_dump_repo'
       DUMP_BRANCH:
         description: 'ROM dump branch name'
         required: true
+        default: 'main'
       DEVICE_BRAND:
-        description: 'Device brand name (e.g., xiaomi)'
+        description: 'Device manufacturer (e.g., xiaomi, realme)'
         required: true
+        default: 'xiaomi'
       CODENAME:
         description: 'Device codename (e.g., daisy)'
         required: true
+        default: 'daisy'
       GIT_NAME:
         description: 'Your GitHub username'
         required: true
+        default: 'frnwot'
       GIT_EMAIL:
         description: 'Your GitHub email address'
         required: true
+        default: 'frnbuid2005@gmail.com'
 
 jobs:
-  generate-tree:
-    name: Generate and Upload Device Tree
+  gen-tree:
+    name: Create LineageOS compatible tree
+    if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-latest
 
-    if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      GH_TOKEN: ${{ secrets.LOS }}
+      DU: ${{ github.event.inputs.DUMP_URL }}
+      DUB: ${{ github.event.inputs.DUMP_BRANCH }}
+      DB: ${{ github.event.inputs.DEVICE_BRAND }}
+      CN: ${{ github.event.inputs.CODENAME }}
+      GN: ${{ github.event.inputs.GIT_NAME }}
+      GE: ${{ github.event.inputs.GIT_EMAIL }}
 
     permissions:
       contents: write
 
-    env:
-      GH_TOKEN: ${{ secrets.LOS }}
-
     steps:
-      - name: Run full generation pipeline
-        run: |
-          set -euo pipefail
-          trap 'echo "::error::Error at line $LINENO: $BASH_COMMAND"' ERR
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-          echo "========== [1/6] Environment Setup =========="
-          sudo apt update && sudo apt install -y git curl python3 python3-pip cpio
+    - name: Install required packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cpio python3 git curl
 
-          echo "Installing GitHub CLI..."
+    - name: Install GitHub CLI
+      run: |
+        type -p gh || (
           curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
-            sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
-            https://cli.github.com/packages stable main" | \
-            sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          sudo apt update && sudo apt install gh -y
+            sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
+            sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+          sudo apt update && \
+          sudo apt install -y gh
+        )
 
-          echo "Installing aospdtgen..."
-          pip3 install aospdtgen
+    - name: Authenticate with GitHub CLI (Token Only)
+      run: echo "$GH_TOKEN" | gh auth login --with-token
 
-          echo "========== [2/6] Cloning ROM Dump =========="
-          WORK_DIR="$HOME/LOS-Generator"
-          DUMP_DIR="$WORK_DIR/dump"
-          OUTPUT_DIR="$WORK_DIR/output"
+    - name: Clone ROM Dump
+      run: |
+        mkdir -p ~/LOS-Generator && cd ~/LOS-Generator
+        git clone "$DU" -b "$DUB" dump
 
-          mkdir -p "$DUMP_DIR"
-          git clone --depth=1 --branch "${{ github.event.inputs.DUMP_BRANCH }}" "${{ github.event.inputs.DUMP_URL }}" "$DUMP_DIR"
+    - name: Install AOSPDTGEN
+      run: pip3 install aospdtgen
 
-          echo "========== [3/6] Generating Device Tree =========="
-          cd "$DUMP_DIR"
-          python3 -m aospdtgen . --output "$OUTPUT_DIR"
+    - name: Generate LineageOS tree
+      run: |
+        cd ~/LOS-Generator/dump
+        python3 -m aospdtgen .
+        mv output ../output
 
-          echo "========== [4/6] Validating Output =========="
-          if [ ! -f "$OUTPUT_DIR/device.mk" ] && [ ! -d "$OUTPUT_DIR/${{ github.event.inputs.DEVICE_BRAND }}" ]; then
-            echo "::error::Device tree generation failed or output is invalid."
-            exit 1
-          fi
+    - name: Configure Git identity
+      run: |
+        git config --global user.name "$GN"
+        git config --global user.email "$GE"
 
-          echo "========== [5/6] Initializing Git =========="
-          cd "$OUTPUT_DIR"
-          git config --global init.defaultBranch main
-          git init
-          git checkout -b "lineage-${{ github.event.inputs.CODENAME }}"
-          git config user.name "${{ github.event.inputs.GIT_NAME }}"
-          git config user.email "${{ github.event.inputs.GIT_EMAIL }}"
+    - name: Push LineageOS tree to GitHub
+      run: |
+        cd ~/LOS-Generator/output
+        git init
+        git checkout -b lineage-$CN
+        git add .
+        git commit -m "$CN: LineageOS compatible device tree"
+        gh repo create lineage_device_${DB}_${CN} \
+          --public \
+          --description "LineageOS compatible device tree for $CN." \
+          --source=. \
+          --remote=origin \
+          --push
 
-          echo "Creating README.md..."
-          cat > README.md <<EOF
-# LineageOS Device Tree for ${{ github.event.inputs.CODENAME }}
+    - name: Job Complete
+      run: echo "✅ Tree generation complete!"
 
-This device tree was generated using [aospdtgen](https://github.com/sebaubuntu-python/aospdtgen).
-
-- Brand: ${{ github.event.inputs.DEVICE_BRAND }}
-- Codename: ${{ github.event.inputs.CODENAME }}
-EOF
-
-          git add .
-          git commit -s -m "${{ github.event.inputs.CODENAME }}: LineageOS compatible device tree"
-
-          echo "========== [6/6] Creating GitHub Repository and Uploading =========="
-          gh repo create "lineage_device_${{ github.event.inputs.DEVICE_BRAND }}_${{ github.event.inputs.CODENAME }}" \
-            --public \
-            --description="LineageOS device tree for ${{ github.event.inputs.CODENAME }}" \
-            --source=. \
-            --remote=origin \
-            --push
-
-          echo "✅ Completed: Device tree has been uploaded to GitHub."
+# Example Usage:
+# Trigger this workflow manually with the following inputs:
+#   DUMP_URL=https://github.com/yourusername/device_dump_repo
+#   DUMP_BRANCH=main
+#   DEVICE_BRAND=xiaomi
+#   CODENAME=daisy
+#   GIT_NAME=frnwot
+#   GIT_EMAIL=frnbuid2005@gmail.com
+# Ensure a GitHub token with repo access is saved in your repo secrets as `LOS`
