@@ -4,6 +4,7 @@
 
 name: losdtgen
 
+
 on:
   workflow_dispatch:
     inputs:
@@ -19,6 +20,9 @@ on:
       CODENAME:
         description: 'Device codename (e.g., daisy)'
         required: true
+      OLD_CODENAME:
+        description: 'Original codename to rename from (e.g., generic)'
+        required: true
       GIT_NAME:
         description: 'Your GitHub username'
         required: true
@@ -28,7 +32,10 @@ on:
 
 jobs:
   generate-tree:
+    name: Generate and Upload Device Tree
     runs-on: ubuntu-latest
+
+    if: github.event.repository.owner.id == github.event.sender.id
 
     permissions:
       contents: write
@@ -39,11 +46,12 @@ jobs:
       DUMP_BRANCH: ${{ github.event.inputs.DUMP_BRANCH }}
       DEVICE_BRAND: ${{ github.event.inputs.DEVICE_BRAND }}
       CODENAME: ${{ github.event.inputs.CODENAME }}
+      OLD_CODENAME: ${{ github.event.inputs.OLD_CODENAME }}
       GIT_NAME: ${{ github.event.inputs.GIT_NAME }}
       GIT_EMAIL: ${{ github.event.inputs.GIT_EMAIL }}
 
     steps:
-      - name: Generate and Upload Device Tree
+      - name: Run full generation pipeline
         run: |
           set -euo pipefail
           trap 'echo -e "\033[0;31mError at line $LINENO: $BASH_COMMAND\033[0m"' ERR
@@ -54,7 +62,7 @@ jobs:
           BLUE='\033[0;34m'
           NC='\033[0m' # No Color
 
-          echo -e "${BLUE}=== [1/6] Installing Dependencies...${NC}"
+          echo -e "${BLUE}========== [1/6] Environment Setup ==========${NC}"
           sudo apt update -qq
           sudo apt install -y git curl python3 python3-pip cpio >/dev/null
 
@@ -67,10 +75,10 @@ jobs:
           sudo apt update -qq
           sudo apt install -y gh >/dev/null
 
-          echo -e "${BLUE}Installing aospdtgen Python package...${NC}"
+          echo -e "${BLUE}Installing aospdtgen...${NC}"
           pip3 install --quiet aospdtgen
 
-          echo -e "${BLUE}=== [2/6] Cloning ROM Dump...${NC}"
+          echo -e "${BLUE}========== [2/6] Cloning ROM Dump ==========${NC}"
           WORK_DIR="$HOME/LOS-Generator"
           DUMP_DIR="$WORK_DIR/dump"
           OUTPUT_DIR="$WORK_DIR/output"
@@ -78,25 +86,25 @@ jobs:
           mkdir -p "$DUMP_DIR"
           git clone --depth=1 --branch "$DUMP_BRANCH" "$DUMP_URL" "$DUMP_DIR"
 
-          echo -e "${BLUE}=== [3/6] Generating Device Tree...${NC}"
+          echo -e "${BLUE}========== [3/6] Generating Device Tree ==========${NC}"
           cd "$DUMP_DIR"
           python3 -m aospdtgen . --output "$OUTPUT_DIR"
 
-          echo -e "${BLUE}=== [4/6] Validating output...${NC}"
+          echo -e "${BLUE}========== [4/6] Validating output ==========${NC}"
           if [ ! -f "$OUTPUT_DIR/device.mk" ] && [ ! -d "$OUTPUT_DIR/$DEVICE_BRAND" ]; then
             echo -e "${RED}Device tree generation failed or output is invalid.${NC}"
             exit 1
           fi
 
-          echo -e "${BLUE}=== [4.5/6] Post-processing files...${NC}"
+          echo -e "${BLUE}========== [4.5/6] Post-processing files ==========${NC}"
           cd "$OUTPUT_DIR"
 
-          # Rename lineage_CODENAME.mk → CODENAME.mk if exists
-          LINEAGE_FILE="lineage_${CODENAME}.mk"
-          TARGET_FILE="${CODENAME}.mk"
-          if [ -f "$LINEAGE_FILE" ]; then
-            git mv "$LINEAGE_FILE" "$TARGET_FILE"
-            echo -e "${YELLOW}Renamed $LINEAGE_FILE to $TARGET_FILE${NC}"
+          # Rename lineage_<OLD_CODENAME>.mk to <CODENAME>.mk if exists
+          LINEAGE_MK="lineage_${OLD_CODENAME}.mk"
+          TARGET_MK="${CODENAME}.mk"
+          if [ -f "$LINEAGE_MK" ]; then
+            git mv "$LINEAGE_MK" "$TARGET_MK"
+            echo -e "${YELLOW}Renamed $LINEAGE_MK to $TARGET_MK${NC}"
           fi
 
           # Replace 'PRODUCT_BRAND := Android' with actual device brand in all .mk files
@@ -109,17 +117,17 @@ jobs:
             done
           fi
 
-          # Replace all occurrences of 'generic' with device codename in all files (excluding .git)
-          GENERIC_FILES=$(git grep -l 'generic' -- . ':!./.git' || true)
-          if [ -n "$GENERIC_FILES" ]; then
-            for f in $GENERIC_FILES; do
-              sed -i "s/generic/$CODENAME/g" "$f"
+          # Replace all occurrences of OLD_CODENAME (e.g. generic) with CODENAME in all files except .git
+          REPLACE_FILES=$(git grep -l "$OLD_CODENAME" -- . ':!./.git' || true)
+          if [ -n "$REPLACE_FILES" ]; then
+            for f in $REPLACE_FILES; do
+              sed -i "s/$OLD_CODENAME/$CODENAME/g" "$f"
               git add "$f"
-              echo -e "${YELLOW}Replaced 'generic' with '$CODENAME' in $f${NC}"
+              echo -e "${YELLOW}Replaced '$OLD_CODENAME' with '$CODENAME' in $f${NC}"
             done
           fi
 
-          echo -e "${BLUE}=== [5/6] Initializing Git repository...${NC}"
+          echo -e "${BLUE}========== [5/6] Initializing Git ==========${NC}"
           git config --global init.defaultBranch main
           git init
           git checkout -b "lineage-$CODENAME"
@@ -137,9 +145,9 @@ This device tree was generated using [aospdtgen](https://github.com/sebaubuntu-p
 EOF
 
           git add README.md
-          git commit -s -m "$CODENAME: LineageOS compatible device tree with post-processing changes"
+          git commit -s -m "$CODENAME: LineageOS compatible device tree with renaming and replacements"
 
-          echo -e "${BLUE}=== [6/6] Creating GitHub repository and pushing...${NC}"
+          echo -e "${BLUE}========== [6/6] Creating GitHub repo and pushing ==========${NC}"
           gh repo create "lineage_device_${DEVICE_BRAND}_${CODENAME}" \
             --public \
             --description="LineageOS device tree for $CODENAME" \
@@ -147,4 +155,4 @@ EOF
             --remote=origin \
             --push
 
-          echo -e "${GREEN}Device tree generation and upload complete.${NC}"
+          echo -e "${GREEN}Done: Device tree uploaded successfully.${NC}"
