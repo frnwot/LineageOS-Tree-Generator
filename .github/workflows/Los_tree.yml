@@ -3,7 +3,6 @@
 # New GitHub Identity: frnwot <frnbuid2005@gmail.com>
 
 name: losdtgen
-
 on:
   workflow_dispatch:
     inputs:
@@ -38,6 +37,12 @@ jobs:
 
     env:
       GH_TOKEN: ${{ secrets.LOS }}
+      DUMP_URL: ${{ github.event.inputs.DUMP_URL }}
+      DUMP_BRANCH: ${{ github.event.inputs.DUMP_BRANCH }}
+      DEVICE_BRAND: ${{ github.event.inputs.DEVICE_BRAND }}
+      CODENAME: ${{ github.event.inputs.CODENAME }}
+      GIT_NAME: ${{ github.event.inputs.GIT_NAME }}
+      GIT_EMAIL: ${{ github.event.inputs.GIT_EMAIL }}
 
     steps:
       - name: Run full generation pipeline
@@ -66,23 +71,20 @@ jobs:
           OUTPUT_DIR="$WORK_DIR/output"
 
           mkdir -p "$DUMP_DIR"
-          git clone --depth=1 --branch "${{ github.event.inputs.DUMP_BRANCH }}" "${{ github.event.inputs.DUMP_URL }}" "$DUMP_DIR"
+          git clone --depth=1 --branch "$DUMP_BRANCH" "$DUMP_URL" "$DUMP_DIR"
 
           echo "========== [3/6] Generating Device Tree =========="
           cd "$DUMP_DIR"
           python3 -m aospdtgen . --output "$OUTPUT_DIR"
 
           echo "========== [4/6] Validating Output =========="
-          if [ ! -f "$OUTPUT_DIR/device.mk" ] && [ ! -d "$OUTPUT_DIR/${{ github.event.inputs.DEVICE_BRAND }}" ]; then
+          if [ ! -f "$OUTPUT_DIR/device.mk" ] && [ ! -d "$OUTPUT_DIR/$DEVICE_BRAND" ]; then
             echo "::error::Device tree generation failed or output is invalid."
             exit 1
           fi
 
           echo "========== [4.5/6] Post-processing Device Tree Files =========="
           cd "$OUTPUT_DIR"
-
-          CODENAME="${{ github.event.inputs.CODENAME }}"
-          DEVICE_BRAND="${{ github.event.inputs.DEVICE_BRAND }}"
 
           # Rename lineage_CODENAME.mk to CODENAME.mk if exists
           LINEAGE_MK="lineage_${CODENAME}.mk"
@@ -119,8 +121,8 @@ jobs:
           git config --global init.defaultBranch main
           git init
           git checkout -b "lineage-$CODENAME"
-          git config user.name "${{ github.event.inputs.GIT_NAME }}"
-          git config user.email "${{ github.event.inputs.GIT_EMAIL }}"
+          git config user.name "$GIT_NAME"
+          git config user.email "$GIT_EMAIL"
 
           echo "Creating README.md..."
           cat > README.md <<EOF
@@ -144,4 +146,3 @@ EOF
             --push
 
           echo "Completed: Device tree has been uploaded to GitHub."
-          
