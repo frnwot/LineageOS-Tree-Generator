@@ -3,6 +3,7 @@
 # New GitHub Identity: frnwot <frnbuid2005@gmail.com>
 
 name: losdtgen
+
 on:
   workflow_dispatch:
     inputs:
@@ -27,10 +28,7 @@ on:
 
 jobs:
   generate-tree:
-    name: Generate and Upload Device Tree
     runs-on: ubuntu-latest
-
-    if: github.event.repository.owner.id == github.event.sender.id
 
     permissions:
       contents: write
@@ -45,27 +43,34 @@ jobs:
       GIT_EMAIL: ${{ github.event.inputs.GIT_EMAIL }}
 
     steps:
-      - name: Run full generation pipeline
+      - name: Generate and Upload Device Tree
         run: |
           set -euo pipefail
-          trap 'echo "::error::Error at line $LINENO: $BASH_COMMAND"' ERR
+          trap 'echo -e "\033[0;31mError at line $LINENO: $BASH_COMMAND\033[0m"' ERR
 
-          echo "========== [1/6] Environment Setup =========="
-          sudo apt update && sudo apt install -y git curl python3 python3-pip cpio
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[0;33m'
+          BLUE='\033[0;34m'
+          NC='\033[0m' # No Color
 
-          echo "Installing GitHub CLI..."
+          echo -e "${BLUE}=== [1/6] Installing Dependencies...${NC}"
+          sudo apt update -qq
+          sudo apt install -y git curl python3 python3-pip cpio >/dev/null
+
+          echo -e "${BLUE}Installing GitHub CLI...${NC}"
           curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
-            sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg status=none
           sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
-            https://cli.github.com/packages stable main" | \
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
             sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          sudo apt update && sudo apt install gh -y
+          sudo apt update -qq
+          sudo apt install -y gh >/dev/null
 
-          echo "Installing aospdtgen..."
-          pip3 install aospdtgen
+          echo -e "${BLUE}Installing aospdtgen Python package...${NC}"
+          pip3 install --quiet aospdtgen
 
-          echo "========== [2/6] Cloning ROM Dump =========="
+          echo -e "${BLUE}=== [2/6] Cloning ROM Dump...${NC}"
           WORK_DIR="$HOME/LOS-Generator"
           DUMP_DIR="$WORK_DIR/dump"
           OUTPUT_DIR="$WORK_DIR/output"
@@ -73,55 +78,55 @@ jobs:
           mkdir -p "$DUMP_DIR"
           git clone --depth=1 --branch "$DUMP_BRANCH" "$DUMP_URL" "$DUMP_DIR"
 
-          echo "========== [3/6] Generating Device Tree =========="
+          echo -e "${BLUE}=== [3/6] Generating Device Tree...${NC}"
           cd "$DUMP_DIR"
           python3 -m aospdtgen . --output "$OUTPUT_DIR"
 
-          echo "========== [4/6] Validating Output =========="
+          echo -e "${BLUE}=== [4/6] Validating output...${NC}"
           if [ ! -f "$OUTPUT_DIR/device.mk" ] && [ ! -d "$OUTPUT_DIR/$DEVICE_BRAND" ]; then
-            echo "::error::Device tree generation failed or output is invalid."
+            echo -e "${RED}Device tree generation failed or output is invalid.${NC}"
             exit 1
           fi
 
-          echo "========== [4.5/6] Post-processing Device Tree Files =========="
+          echo -e "${BLUE}=== [4.5/6] Post-processing files...${NC}"
           cd "$OUTPUT_DIR"
 
-          LINEAGE_MK="lineage_${CODENAME}.mk"
-          PRODUCT_MODEL_MK="${CODENAME}.mk"
-
-          if [ -f "$LINEAGE_MK" ]; then
-            git mv "$LINEAGE_MK" "$PRODUCT_MODEL_MK"
-            echo "Renamed $LINEAGE_MK to $PRODUCT_MODEL_MK"
+          # Rename lineage_CODENAME.mk → CODENAME.mk if exists
+          LINEAGE_FILE="lineage_${CODENAME}.mk"
+          TARGET_FILE="${CODENAME}.mk"
+          if [ -f "$LINEAGE_FILE" ]; then
+            git mv "$LINEAGE_FILE" "$TARGET_FILE"
+            echo -e "${YELLOW}Renamed $LINEAGE_FILE to $TARGET_FILE${NC}"
           fi
 
-          MK_FILES=$(git grep -l 'PRODUCT_BRAND := Android' -- '*.mk' || true)
-
+          # Replace 'PRODUCT_BRAND := Android' with actual device brand in all .mk files
+          MK_FILES=$(git grep -l '^PRODUCT_BRAND := Android' -- '*.mk' || true)
           if [ -n "$MK_FILES" ]; then
-            for file in $MK_FILES; do
-              sed -i "s/^PRODUCT_BRAND := Android/PRODUCT_BRAND := $DEVICE_BRAND/" "$file"
-              git add "$file"
-              echo "Replaced PRODUCT_BRAND in $file"
+            for f in $MK_FILES; do
+              sed -i "s/^PRODUCT_BRAND := Android/PRODUCT_BRAND := $DEVICE_BRAND/" "$f"
+              git add "$f"
+              echo -e "${YELLOW}Replaced PRODUCT_BRAND in $f${NC}"
             done
           fi
 
+          # Replace all occurrences of 'generic' with device codename in all files (excluding .git)
           GENERIC_FILES=$(git grep -l 'generic' -- . ':!./.git' || true)
-
           if [ -n "$GENERIC_FILES" ]; then
-            for file in $GENERIC_FILES; do
-              sed -i "s/generic/$CODENAME/g" "$file"
-              git add "$file"
-              echo "Replaced 'generic' with '$CODENAME' in $file"
+            for f in $GENERIC_FILES; do
+              sed -i "s/generic/$CODENAME/g" "$f"
+              git add "$f"
+              echo -e "${YELLOW}Replaced 'generic' with '$CODENAME' in $f${NC}"
             done
           fi
 
-          echo "========== [5/6] Initializing Git =========="
+          echo -e "${BLUE}=== [5/6] Initializing Git repository...${NC}"
           git config --global init.defaultBranch main
           git init
           git checkout -b "lineage-$CODENAME"
           git config user.name "$GIT_NAME"
           git config user.email "$GIT_EMAIL"
 
-          echo "Creating README.md..."
+          echo -e "${BLUE}Creating README.md...${NC}"
           cat > README.md <<EOF
 # LineageOS Device Tree for $CODENAME
 
@@ -134,7 +139,7 @@ EOF
           git add README.md
           git commit -s -m "$CODENAME: LineageOS compatible device tree with post-processing changes"
 
-          echo "========== [6/6] Creating GitHub Repository and Uploading =========="
+          echo -e "${BLUE}=== [6/6] Creating GitHub repository and pushing...${NC}"
           gh repo create "lineage_device_${DEVICE_BRAND}_${CODENAME}" \
             --public \
             --description="LineageOS device tree for $CODENAME" \
@@ -142,5 +147,4 @@ EOF
             --remote=origin \
             --push
 
-          echo "Completed: Device tree has been uploaded to GitHub."
-          
+          echo -e "${GREEN}Device tree generation and upload complete.${NC}"
