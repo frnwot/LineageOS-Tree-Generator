@@ -1,0 +1,147 @@
+# Auto LineageOS Tree Generator Workflow - Advanced Version
+# Developed by: jisan ff <ffjisan804@gmail.com>
+# New GitHub Identity: frnwot <frnbuid2005@gmail.com>
+
+name: losdtgen
+
+on:
+  workflow_dispatch:
+    inputs:
+      DUMP_URL:
+        description: 'ROM dump Git repository URL'
+        required: true
+      DUMP_BRANCH:
+        description: 'ROM dump branch name'
+        required: true
+      DEVICE_BRAND:
+        description: 'Device brand name (e.g., xiaomi)'
+        required: true
+      CODENAME:
+        description: 'Device codename (e.g., daisy)'
+        required: true
+      GIT_NAME:
+        description: 'Your GitHub username'
+        required: true
+      GIT_EMAIL:
+        description: 'Your GitHub email address'
+        required: true
+
+jobs:
+  generate-tree:
+    name: Generate and Upload Device Tree
+    runs-on: ubuntu-latest
+
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    permissions:
+      contents: write
+
+    env:
+      GH_TOKEN: ${{ secrets.LOS }}
+
+    steps:
+      - name: Run full generation pipeline
+        run: |
+          set -euo pipefail
+          trap 'echo "::error::Error at line $LINENO: $BASH_COMMAND"' ERR
+
+          echo "========== [1/6] Environment Setup =========="
+          sudo apt update && sudo apt install -y git curl python3 python3-pip cpio
+
+          echo "Installing GitHub CLI..."
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
+            sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
+            https://cli.github.com/packages stable main" | \
+            sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update && sudo apt install gh -y
+
+          echo "Installing aospdtgen..."
+          pip3 install aospdtgen
+
+          echo "========== [2/6] Cloning ROM Dump =========="
+          WORK_DIR="$HOME/LOS-Generator"
+          DUMP_DIR="$WORK_DIR/dump"
+          OUTPUT_DIR="$WORK_DIR/output"
+
+          mkdir -p "$DUMP_DIR"
+          git clone --depth=1 --branch "${{ github.event.inputs.DUMP_BRANCH }}" "${{ github.event.inputs.DUMP_URL }}" "$DUMP_DIR"
+
+          echo "========== [3/6] Generating Device Tree =========="
+          cd "$DUMP_DIR"
+          python3 -m aospdtgen . --output "$OUTPUT_DIR"
+
+          echo "========== [4/6] Validating Output =========="
+          if [ ! -f "$OUTPUT_DIR/device.mk" ] && [ ! -d "$OUTPUT_DIR/${{ github.event.inputs.DEVICE_BRAND }}" ]; then
+            echo "::error::Device tree generation failed or output is invalid."
+            exit 1
+          fi
+
+          echo "========== [4.5/6] Post-processing Device Tree Files =========="
+          cd "$OUTPUT_DIR"
+
+          CODENAME="${{ github.event.inputs.CODENAME }}"
+          DEVICE_BRAND="${{ github.event.inputs.DEVICE_BRAND }}"
+
+          # Rename lineage_CODENAME.mk to CODENAME.mk if exists
+          LINEAGE_MK="lineage_${CODENAME}.mk"
+          PRODUCT_MODEL_MK="${CODENAME}.mk"
+
+          if [ -f "$LINEAGE_MK" ]; then
+            git mv "$LINEAGE_MK" "$PRODUCT_MODEL_MK"
+            echo "Renamed $LINEAGE_MK to $PRODUCT_MODEL_MK"
+          fi
+
+          # Replace 'PRODUCT_BRAND := Android' with actual device brand in all *.mk files
+          MK_FILES=$(git grep -l 'PRODUCT_BRAND := Android' -- '*.mk' || true)
+
+          if [ -n "$MK_FILES" ]; then
+            for file in $MK_FILES; do
+              sed -i "s/^PRODUCT_BRAND := Android/PRODUCT_BRAND := $DEVICE_BRAND/" "$file"
+              git add "$file"
+              echo "Replaced PRODUCT_BRAND in $file"
+            done
+          fi
+
+          # Replace all occurrences of 'generic' with device codename in all files except .git dir
+          GENERIC_FILES=$(git grep -l 'generic' -- . ':!./.git' || true)
+
+          if [ -n "$GENERIC_FILES" ]; then
+            for file in $GENERIC_FILES; do
+              sed -i "s/generic/$CODENAME/g" "$file"
+              git add "$file"
+              echo "Replaced 'generic' with '$CODENAME' in $file"
+            done
+          fi
+
+          echo "========== [5/6] Initializing Git =========="
+          git config --global init.defaultBranch main
+          git init
+          git checkout -b "lineage-$CODENAME"
+          git config user.name "${{ github.event.inputs.GIT_NAME }}"
+          git config user.email "${{ github.event.inputs.GIT_EMAIL }}"
+
+          echo "Creating README.md..."
+          cat > README.md <<EOF
+# LineageOS Device Tree for $CODENAME
+
+This device tree was generated using [aospdtgen](https://github.com/sebaubuntu-python/aospdtgen).
+
+- Brand: $DEVICE_BRAND
+- Codename: $CODENAME
+EOF
+
+          git add README.md
+          git commit -s -m "$CODENAME: LineageOS compatible device tree with post-processing changes"
+
+          echo "========== [6/6] Creating GitHub Repository and Uploading =========="
+          gh repo create "lineage_device_${DEVICE_BRAND}_${CODENAME}" \
+            --public \
+            --description="LineageOS device tree for $CODENAME" \
+            --source=. \
+            --remote=origin \
+            --push
+
+          echo "Completed: Device tree has been uploaded to GitHub."
+          
