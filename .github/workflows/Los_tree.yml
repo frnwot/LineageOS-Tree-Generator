@@ -4,7 +4,6 @@
 
 name: losdtgen
 
-
 on:
   workflow_dispatch:
     inputs:
@@ -20,9 +19,6 @@ on:
       CODENAME:
         description: 'Device codename (e.g., daisy)'
         required: true
-      OLD_CODENAME:
-        description: 'Original codename to rename from (e.g., generic)'
-        required: true
       GIT_NAME:
         description: 'Your GitHub username'
         required: true
@@ -32,11 +28,7 @@ on:
 
 jobs:
   generate-tree:
-    name: Generate and Upload Device Tree
     runs-on: ubuntu-latest
-
-    if: github.event.repository.owner.id == github.event.sender.id
-
     permissions:
       contents: write
 
@@ -46,32 +38,29 @@ jobs:
       DUMP_BRANCH: ${{ github.event.inputs.DUMP_BRANCH }}
       DEVICE_BRAND: ${{ github.event.inputs.DEVICE_BRAND }}
       CODENAME: ${{ github.event.inputs.CODENAME }}
-      OLD_CODENAME: ${{ github.event.inputs.OLD_CODENAME }}
       GIT_NAME: ${{ github.event.inputs.GIT_NAME }}
       GIT_EMAIL: ${{ github.event.inputs.GIT_EMAIL }}
 
     steps:
-      - name: Run full generation pipeline
+      - name: Generate and Upload Device Tree
         run: |
           set -euo pipefail
-          trap 'echo -e "\033[0;31mError at line $LINENO: $BASH_COMMAND\033[0m"' ERR
+          trap 'echo "::error::Error at line $LINENO: $BASH_COMMAND"' ERR
 
           RED='\033[0;31m'
           GREEN='\033[0;32m'
           YELLOW='\033[0;33m'
           BLUE='\033[0;34m'
-          NC='\033[0m' # No Color
+          NC='\033[0m'
 
           echo -e "${BLUE}========== [1/6] Environment Setup ==========${NC}"
           sudo apt update -qq
           sudo apt install -y git curl python3 python3-pip cpio >/dev/null
 
           echo -e "${BLUE}Installing GitHub CLI...${NC}"
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
-            sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg status=none
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg status=none
           sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
-            sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
           sudo apt update -qq
           sudo apt install -y gh >/dev/null
 
@@ -90,40 +79,38 @@ jobs:
           cd "$DUMP_DIR"
           python3 -m aospdtgen . --output "$OUTPUT_DIR"
 
-          echo -e "${BLUE}========== [4/6] Validating output ==========${NC}"
+          echo -e "${BLUE}========== [4/6] Validating Output ==========${NC}"
           if [ ! -f "$OUTPUT_DIR/device.mk" ] && [ ! -d "$OUTPUT_DIR/$DEVICE_BRAND" ]; then
-            echo -e "${RED}Device tree generation failed or output is invalid.${NC}"
+            echo "::error::Device tree generation failed or output is invalid."
             exit 1
           fi
 
-          echo -e "${BLUE}========== [4.5/6] Post-processing files ==========${NC}"
+          echo -e "${BLUE}========== [4.5/6] Post-processing Device Tree Files ==========${NC}"
           cd "$OUTPUT_DIR"
 
-          # Rename lineage_<OLD_CODENAME>.mk to <CODENAME>.mk if exists
-          LINEAGE_MK="lineage_${OLD_CODENAME}.mk"
+          LINEAGE_MK="lineage_${CODENAME}.mk"
           TARGET_MK="${CODENAME}.mk"
+
           if [ -f "$LINEAGE_MK" ]; then
             git mv "$LINEAGE_MK" "$TARGET_MK"
             echo -e "${YELLOW}Renamed $LINEAGE_MK to $TARGET_MK${NC}"
           fi
 
-          # Replace 'PRODUCT_BRAND := Android' with actual device brand in all .mk files
           MK_FILES=$(git grep -l '^PRODUCT_BRAND := Android' -- '*.mk' || true)
           if [ -n "$MK_FILES" ]; then
-            for f in $MK_FILES; do
-              sed -i "s/^PRODUCT_BRAND := Android/PRODUCT_BRAND := $DEVICE_BRAND/" "$f"
-              git add "$f"
-              echo -e "${YELLOW}Replaced PRODUCT_BRAND in $f${NC}"
+            for file in $MK_FILES; do
+              sed -i "s/^PRODUCT_BRAND := Android/PRODUCT_BRAND := $DEVICE_BRAND/" "$file"
+              git add "$file"
+              echo -e "${YELLOW}Replaced PRODUCT_BRAND in $file${NC}"
             done
           fi
 
-          # Replace all occurrences of OLD_CODENAME (e.g. generic) with CODENAME in all files except .git
-          REPLACE_FILES=$(git grep -l "$OLD_CODENAME" -- . ':!./.git' || true)
-          if [ -n "$REPLACE_FILES" ]; then
-            for f in $REPLACE_FILES; do
-              sed -i "s/$OLD_CODENAME/$CODENAME/g" "$f"
-              git add "$f"
-              echo -e "${YELLOW}Replaced '$OLD_CODENAME' with '$CODENAME' in $f${NC}"
+          GENERIC_FILES=$(git grep -l 'generic' -- . ':!./.git' || true)
+          if [ -n "$GENERIC_FILES" ]; then
+            for file in $GENERIC_FILES; do
+              sed -i "s/generic/$CODENAME/g" "$file"
+              git add "$file"
+              echo -e "${YELLOW}Replaced 'generic' with '$CODENAME' in $file${NC}"
             done
           fi
 
@@ -145,9 +132,9 @@ This device tree was generated using [aospdtgen](https://github.com/sebaubuntu-p
 EOF
 
           git add README.md
-          git commit -s -m "$CODENAME: LineageOS compatible device tree with renaming and replacements"
+          git commit -s -m "$CODENAME: LineageOS compatible device tree with post-processing changes"
 
-          echo -e "${BLUE}========== [6/6] Creating GitHub repo and pushing ==========${NC}"
+          echo -e "${BLUE}========== [6/6] Creating GitHub Repository and Uploading ==========${NC}"
           gh repo create "lineage_device_${DEVICE_BRAND}_${CODENAME}" \
             --public \
             --description="LineageOS device tree for $CODENAME" \
@@ -155,4 +142,4 @@ EOF
             --remote=origin \
             --push
 
-          echo -e "${GREEN}Done: Device tree uploaded successfully.${NC}"
+          echo -e "${GREEN}Completed: Device tree has been uploaded to GitHub.${NC}"
